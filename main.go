@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"github.com/gorilla/pat"
 	"github.com/minio/minio-go"
 	"log"
 	"net/http"
@@ -74,8 +75,11 @@ func main() {
 		minioClient: minioClient,
 	}
 
+	router := pat.New()
+	router.Get("/{id:[0-9]+}/pictures/{(thumb|ada)}/{file:.*}", thumbnailGenerator.ResizeImage)
+
 	// Handler for index page
-	http.HandleFunc("/ada", thumbnailGenerator.ResizeImage)
+	http.Handle("/", router)
 
 	log.Println("Starting image resizer on " + *address)
 
@@ -96,6 +100,9 @@ func (api thumbnailHandlers) ResizeImage(w http.ResponseWriter, r *http.Request)
 	} else {
 		message = "Bucket " + *bucketName + " Not Exists!"
 	}
+
+	log.Println("id", r.URL.Query().Get(":id"))
+	log.Println("file", r.URL.Query().Get(":file"))
 
 	w.Write([]byte(message))
 }
