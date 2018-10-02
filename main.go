@@ -9,8 +9,10 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"image/gif"
 	_ "image/gif"
 	_ "image/jpeg"
+	"image/png"
 	_ "image/png"
 	"io"
 	"log"
@@ -113,10 +115,30 @@ func main() {
 	log.Fatalln(http.ListenAndServe(*address, nil))
 }
 
-func CreateBackground(width, height int) image.Image {
+func CreateBackground(width, height int, backgroundColor color.Color) image.Image {
 	img := image.NewNRGBA(image.Rect(0, 0, width, height))
-	draw.Draw(img, img.Bounds(), &image.Uniform{color.White}, image.ZP, draw.Src)
+	draw.Draw(img, img.Bounds(), &image.Uniform{backgroundColor}, image.ZP, draw.Src)
 	return img
+}
+
+func GetContentType(r *minio.Object) (string, error) {
+	buffer := make([]byte, 512)
+
+	_, err := r.Read(buffer)
+	if err != nil {
+		return "", err
+	}
+
+	contentType := http.DetectContentType(buffer)
+
+	return contentType, nil
+}
+
+func ImageToPaletted(img image.Image, plt color.Palette) *image.Paletted {
+	b := img.Bounds()
+	pm := image.NewPaletted(b, plt)
+	draw.FloydSteinberg.Draw(pm, b, img, image.ZP)
+	return pm
 }
 
 // Request Process
@@ -201,7 +223,7 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Check target file is alive so return
-	targetFileInfo, err := api.minioClient.StatObject(*bucketName, targetFileName, minio.StatObjectOptions{})
+	_, err = api.minioClient.StatObject(*bucketName, targetFileName, minio.StatObjectOptions{})
 	if err == nil {
 		targetFile, err := api.minioClient.GetObject(*bucketName, targetFileName, minio.GetObjectOptions{})
 		if err != nil {
@@ -210,8 +232,20 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		defer targetFile.Close()
-		w.Header().Add("Content-Type", targetFileInfo.ContentType)
-		_, err = io.CopyN(w, targetFile, targetFileInfo.Size)
+
+		typeName, err := GetContentType(targetFile)
+		if err != nil {
+			log.Println(err)
+			typeName = "application/octet-stream"
+		}
+
+		targetFile.Seek(0, 0)
+
+		w.Header().Add("Content-Type", typeName)
+		host, _ := os.Hostname()
+		w.Header().Add("X-Serve-From", host)
+		w.Header().Add("X-Resized", "false")
+		_, err = io.Copy(w, targetFile)
 		if err != nil {
 			log.Println("File response copy error!", err)
 		}
@@ -235,30 +269,58 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Resize image
-	targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
-	targetData = imaging.OverlayCenter(CreateBackground(width, height), targetData, 100)
-
 	// Create pipes
-
 	imageReader, imageWriter := io.Pipe()
 
 	// Save image
-	var outputFormat imaging.Format
 	switch inputFormat {
 	case "jpeg":
-		outputFormat = imaging.JPEG
-		w.Header().Add("Content-type", sourceFileInfo.ContentType)
+		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.White), targetData, 100)
 		go func() {
 			defer imageWriter.Close()
-			imaging.Encode(imageWriter, targetData, outputFormat, imaging.JPEGQuality(80))
+			imaging.Encode(imageWriter, targetData, imaging.JPEG, imaging.JPEGQuality(80))
 		}()
 	case "gif":
-		outputFormat = imaging.GIF
+		sourceFile.Seek(0, 0)
+		gifList, _ := gif.DecodeAll(sourceFile)
+
+		// Create a new RGBA image to hold the incremental frames.
+		firstFrame := gifList.Image[0].Bounds()
+		b := image.Rect(0, 0, firstFrame.Dx(), firstFrame.Dy())
+		img := image.NewRGBA(b)
+
+		// Resize each frame
+		for i, frame := range gifList.Image {
+			bounds := frame.Bounds()
+			draw.Draw(img, bounds, frame, bounds.Min, draw.Over)
+			tempImage := imaging.Fit(img, width, height, imaging.Lanczos)
+			tempImage = imaging.OverlayCenter(CreateBackground(width, height, color.Transparent), tempImage, 100)
+			gifList.Image[i] = ImageToPaletted(tempImage, frame.Palette)
+		}
+
+		// Setup gif config
+		gifList.Config.Width = width
+		gifList.Config.Height = height
+
+		go func() {
+			defer imageWriter.Close()
+			gif.EncodeAll(imageWriter, gifList)
+		}()
 	case "png":
-		outputFormat = imaging.PNG
+		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.Transparent), targetData, 100)
+		go func() {
+			defer imageWriter.Close()
+			imaging.Encode(imageWriter, targetData, imaging.PNG, imaging.PNGCompressionLevel(png.BestCompression))
+		}()
 	case "bmp":
-		outputFormat = imaging.BMP
+		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.White), targetData, 100)
+		go func() {
+			defer imageWriter.Close()
+			imaging.Encode(imageWriter, targetData, imaging.BMP)
+		}()
 	default:
 		err := "Unknown format " + inputFormat
 		http.Error(w, err, 404)
@@ -266,41 +328,18 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	fmt.Println("2")
-
+	// Create reader clone
 	var buf bytes.Buffer
 	tee := io.TeeReader(imageReader, &buf)
 
+	w.Header().Add("Content-type", sourceFileInfo.ContentType)
+	w.Header().Add("X-Resized", "true")
+	host, _ := os.Hostname()
+	w.Header().Add("X-Serve-From", host)
 	size, _ := io.Copy(w, tee)
 
-	_, a := api.minioClient.PutObject(*bucketName, targetFileName, io.Reader(&buf), size, minio.PutObjectOptions{})
+	_, a := api.minioClient.PutObject(*bucketName, targetFileName, io.Reader(&buf), size, minio.PutObjectOptions{ContentType: sourceFileInfo.ContentType})
 	if a != nil {
 		log.Println(a, targetFileName)
 	}
-	fmt.Println("3")
-
-	//message := ""
-
-	// Debug
-	//message = fmt.Sprintf("file:\t\t%s\nid:\t\t%d\nwidth:\t\t%d\nheight:\t\t%d\n\nsource:\t\t%s\ntarget:\t\t%s\n", file, id, width, height, sourceFileName, targetFileName)
-
-	// Set pattern for split
-	/*
-		pattern := regexp.MustCompile("^pictures/thumb/([0-9]{2,3})X-([0-9]{2,3})X-(.*)$")
-
-		var parts []string
-		parts = pattern.FindStringSubmatch(r.URL.Query().Get(":file"))
-
-		if parts == nil {
-			pattern := regexp.MustCompile("^pictures/thumb/([0-9]+)X-([0-9]+)X-(.*)$")
-		}
-		// Get parts
-		parts := pattern.FindStringSubmatch(r.URL.Query().Get(":file"))
-		if parts == nil {
-			api.ErrorHandler(w, r, 404)
-			return
-		}
-
-		log.Println(parts)*/
-	//w.Write([]byte(message))
 }
