@@ -306,16 +306,17 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 	case "gif":
 		sourceFile.Seek(0, 0)
 		gifList, _ := gif.DecodeAll(sourceFile)
-		ada := gif.GIF{BackgroundIndex:}
+
 		// Create a new RGBA image to hold the incremental frames.
 		//firstFrame := gifList.Image[0]
 		//b := image.Rect(0, 0, firstFrame.Rect.Dx(), firstFrame.Rect.Dy())
 		//transparentImage := image.NewPaletted(b, firstFrame.Palette)
 		//draw.FloydSteinberg.Draw(transparentImage, transparentImage.Bounds(), &image.Uniform{C:color.Transparent}, image.Point{X: 0, Y: 0})
 
-
 		img := make(chan *image.Paletted)
 		go resizeFrame(img, gifList.Image, width, height)
+
+		gifList.Config.ColorModel.Convert(color.RGBA{})
 
 		for i := 0; i < len(gifList.Image); i++ {
 			gifList.Image[i] = <- img
@@ -372,18 +373,18 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 
 func resizeFrame(result chan *image.Paletted, frames []*image.Paletted, tw, th int) {
 	//or := frames[0].Rect
-	r := image.Rect(0, 0, tw, th)
+	//r := image.Rect(0, 0, tw, th)
+
+
+
 
 	beforeBounds := frames[0].Bounds()
-	firstFrame := imaging.Fit(frames[0], tw, th, imaging.Linear)
-	//firstFrame = imaging.OverlayCenter(CreateBackground(tw, th, color.White), firstFrame, 100)
+
+	firstFrame := imaging.Fit(frames[0], tw, th, imaging.Box)
+	firstFrame = imaging.OverlayCenter(CreateBackground(tw, th, color.Transparent), firstFrame, 100)
 	afterBounds := firstFrame.Bounds()
 
-	log.Println(beforeBounds)
-	log.Println(afterBounds)
-
-	img := image.NewNRGBA(r)
-
+	//log.Println(frames[0].Palette)
 	result <- ImageToPaletted(firstFrame, frames[0].Palette)
 	for i := 1; i < len(frames); i++ {
 		frame := frames[i]
@@ -391,14 +392,14 @@ func resizeFrame(result chan *image.Paletted, frames []*image.Paletted, tw, th i
 		log.Println("Frame processing", i)
 
 		//log.Println(frame.Bounds())
+		newImg := imaging.Resize(frame, targetRect.Size().X, targetRect.Size().Y, imaging.Welch)
 
-		newImg := imaging.Resize(frame, targetRect.Size().X, targetRect.Size().Y, imaging.Linear)
-
-		draw.Draw(img, img.Bounds(), &image.Uniform{C:color.Transparent}, image.ZP, draw.Over)
-		draw.Draw(img, targetRect.Bounds(), newImg, newImg.Bounds().Min, draw.Over)
+		img := *image.NewNRGBA(targetRect)
+		//draw.Draw(img, targetRect, &image.Uniform{C:color.Transparent}, image.ZP, draw.Src)
+		draw.Draw(&img, targetRect, newImg, newImg.Bounds().Min, draw.Over)
 
 		//log.Println(newImg.S)
-		result <- ImageToPaletted(img, frame.Palette)
+		result <- ImageToPaletted(&img, frame.Palette)
 	}
 
 	close(result)
