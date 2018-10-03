@@ -4,16 +4,16 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	_ "github.com/Soreil/svg"
 	"github.com/disintegration/imaging"
 	"github.com/minio/minio-go"
+	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/gif"
-	_ "image/gif"
 	_ "image/jpeg"
 	"image/png"
-	_ "image/png"
 	"io"
 	"log"
 	"net/http"
@@ -137,7 +137,7 @@ func GetContentType(r *minio.Object) (string, error) {
 func ImageToPaletted(img image.Image, plt color.Palette) *image.Paletted {
 	b := img.Bounds()
 	pm := image.NewPaletted(b, plt)
-	draw.FloydSteinberg.Draw(pm, b, img, image.ZP)
+	draw.FloydSteinberg.Draw(pm, b, img, b.Min)
 	return pm
 }
 
@@ -149,6 +149,7 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 
 	// Set variables
 	file := ""
+	ext := ""
 	width := 0
 	height := 0
 	id := 0
@@ -157,50 +158,53 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 
 	// Check request
 	switch true {
-	case isMatched(regexp.MatchString("^/[0-9]{1,6}/pictures/thumb/[0-9]{2,3}X-[0-9]{2,3}X-.*\\.(jpg|jfif|jpeg|gif|png|webp|svg)$", path)):
+	case isMatched(regexp.MatchString("(?i)^/[0-9]{1,6}/pictures/thumb/[0-9]{2,3}X-[0-9]{2,3}X-.*\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$", path)):
 
 		// /123/pictures/thumb/000X-000X-file.ext
-		parts := regexp.MustCompile("^/([0-9]{1,6})/pictures/thumb/([0-9]{2,3})X-([0-9]{2,3})X-(.*)$").FindStringSubmatch(path)
+		parts := regexp.MustCompile("(?i)^/([0-9]{1,6})/pictures/thumb/([0-9]{2,3})X-([0-9]{2,3})X-(.*)\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$").FindStringSubmatch(path)
 
 		// Set variables
 		file = parts[4]
+		ext = parts[5]
 		id, _ = strconv.Atoi(parts[1])
 		width, _ = strconv.Atoi(parts[2])
 		height, _ = strconv.Atoi(parts[3])
 
 		// Set files
-		sourceFileName = fmt.Sprintf("%d/pictures/%s", id, file)
-		targetFileName = fmt.Sprintf("%d/pictures/thumb/%dX-%dX-%s", id, width, height, file)
+		sourceFileName = fmt.Sprintf("%d/pictures/%s.%s", id, file, ext)
+		targetFileName = fmt.Sprintf("%d/pictures/thumb/%dX-%dX-%s.%s", id, width, height, file, ext)
 
-	case isMatched(regexp.MatchString("^/[0-9]{1,6}/pictures/thumb/[0-9]{2,3}X-.*\\.(jpg|jfif|jpeg|gif|png|webp|svg)$", path)):
+	case isMatched(regexp.MatchString("(?i)^/[0-9]{1,6}/pictures/thumb/[0-9]{2,3}X-.*\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$", path)):
 
 		// /123/pictures/thumb/000X-file.ext
-		parts := regexp.MustCompile("^/([0-9]{1,6})/pictures/thumb/([0-9]{2,3})X-(.*)$").FindStringSubmatch(path)
+		parts := regexp.MustCompile("(?i)^/([0-9]{1,6})/pictures/thumb/([0-9]{2,3})X-(.*)\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$").FindStringSubmatch(path)
 
 		// Set variables
 		file = parts[3]
+		ext = parts[4]
 		id, _ = strconv.Atoi(parts[1])
 		width, _ = strconv.Atoi(parts[2])
 		height = 0
 
 		// Set files
-		sourceFileName = fmt.Sprintf("%d/pictures/%s", id, file)
-		targetFileName = fmt.Sprintf("%d/pictures/thumb/%dX-%s", id, width, file)
+		sourceFileName = fmt.Sprintf("%d/pictures/%s.%s", id, file, ext)
+		targetFileName = fmt.Sprintf("%d/pictures/thumb/%dX-%s.%s", id, width, file, ext)
 
-	case isMatched(regexp.MatchString("^/[0-9]{1,6}/dosyalar/_thumbs/.*\\.(jpg|jfif|jpeg|gif|png|webp|svg)$", path)):
+	case isMatched(regexp.MatchString("(?i)^/[0-9]{1,6}/dosyalar/_thumbs/.*\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$", path)):
 
 		// /123/dosyalar/_thumbs/file.ext
-		parts := regexp.MustCompile("^/([0-9]{1,6})/dosyalar/_thumbs/(.*)$").FindStringSubmatch(path)
+		parts := regexp.MustCompile("(?i)^/([0-9]{1,6})/dosyalar/_thumbs/(.*)\\.(jpg|jfif|jpeg|gif|png|webp|svg|bmp)$").FindStringSubmatch(path)
 
 		// Set variables
 		file = parts[2]
+		ext = parts[3]
 		id, _ = strconv.Atoi(parts[1])
 		width = 100
 		height = 100
 
 		// Set files
-		sourceFileName = fmt.Sprintf("%d/dosyalar/%s", id, file)
-		targetFileName = fmt.Sprintf("%d/dosyalar/_thumbs/%s", id, file)
+		sourceFileName = fmt.Sprintf("%d/dosyalar/%s.%s", id, file, ext)
+		targetFileName = fmt.Sprintf("%d/dosyalar/_thumbs/%s.%s", id, file, ext)
 
 	default:
 
@@ -235,20 +239,17 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 
 		typeName, err := GetContentType(targetFile)
 		if err != nil {
-			log.Println(err)
 			typeName = "application/octet-stream"
 		}
 
+		log.Println(targetFileName)
 		targetFile.Seek(0, 0)
 
 		w.Header().Add("Content-Type", typeName)
 		host, _ := os.Hostname()
 		w.Header().Add("X-Serve-From", host)
 		w.Header().Add("X-Resized", "false")
-		_, err = io.Copy(w, targetFile)
-		if err != nil {
-			log.Println("File response copy error!", err)
-		}
+		io.Copy(w, targetFile)
 		return
 	}
 
@@ -272,10 +273,31 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 	// Create pipes
 	imageReader, imageWriter := io.Pipe()
 
+	// Check image is small for given width height
+	resizeRequire := false; targetWidthHeight := map[string]int{ "width": 0, "height": 0 }
+	if imageData.Bounds().Size().X < width && imageData.Bounds().Size().Y < height {
+		resizeRequire = true
+		if imageData.Bounds().Size().X >= imageData.Bounds().Size().Y {
+			targetWidthHeight["width"] = width
+			targetWidthHeight["height"] = 0
+		} else {
+			targetWidthHeight["width"] = 0
+			targetWidthHeight["height"] = height
+		}
+	}
+
+	// Content Type
+	targetContentType := sourceFileInfo.ContentType
+
 	// Save image
+	targetData := imageData
 	switch inputFormat {
 	case "jpeg":
-		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+		if resizeRequire {
+			targetData = imaging.Resize(targetData, targetWidthHeight["width"], targetWidthHeight["height"], imaging.Lanczos)
+		}
+		targetData = imaging.Fit(targetData, width, height, imaging.Linear)
+		targetData = imaging.Sharpen(targetData, .7)
 		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.White), targetData, 100)
 		go func() {
 			defer imageWriter.Close()
@@ -284,19 +306,19 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 	case "gif":
 		sourceFile.Seek(0, 0)
 		gifList, _ := gif.DecodeAll(sourceFile)
-
+		ada := gif.GIF{BackgroundIndex:}
 		// Create a new RGBA image to hold the incremental frames.
-		firstFrame := gifList.Image[0].Bounds()
-		b := image.Rect(0, 0, firstFrame.Dx(), firstFrame.Dy())
-		img := image.NewRGBA(b)
+		//firstFrame := gifList.Image[0]
+		//b := image.Rect(0, 0, firstFrame.Rect.Dx(), firstFrame.Rect.Dy())
+		//transparentImage := image.NewPaletted(b, firstFrame.Palette)
+		//draw.FloydSteinberg.Draw(transparentImage, transparentImage.Bounds(), &image.Uniform{C:color.Transparent}, image.Point{X: 0, Y: 0})
 
-		// Resize each frame
-		for i, frame := range gifList.Image {
-			bounds := frame.Bounds()
-			draw.Draw(img, bounds, frame, bounds.Min, draw.Over)
-			tempImage := imaging.Fit(img, width, height, imaging.Lanczos)
-			tempImage = imaging.OverlayCenter(CreateBackground(width, height, color.Transparent), tempImage, 100)
-			gifList.Image[i] = ImageToPaletted(tempImage, frame.Palette)
+
+		img := make(chan *image.Paletted)
+		go resizeFrame(img, gifList.Image, width, height)
+
+		for i := 0; i < len(gifList.Image); i++ {
+			gifList.Image[i] = <- img
 		}
 
 		// Setup gif config
@@ -308,38 +330,76 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 			gif.EncodeAll(imageWriter, gifList)
 		}()
 	case "png":
-		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+		if resizeRequire {
+			targetData = imaging.Resize(targetData, targetWidthHeight["width"], targetWidthHeight["height"], imaging.Lanczos)
+		}
+		targetData = imaging.Fit(targetData, width, height, imaging.Lanczos)
 		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.Transparent), targetData, 100)
 		go func() {
 			defer imageWriter.Close()
 			imaging.Encode(imageWriter, targetData, imaging.PNG, imaging.PNGCompressionLevel(png.BestCompression))
 		}()
-	case "bmp":
-		targetData := imaging.Fit(imageData, width, height, imaging.Lanczos)
+	default:
+		if resizeRequire {
+			targetData = imaging.Resize(targetData, targetWidthHeight["width"], targetWidthHeight["height"], imaging.Lanczos)
+		}
+		targetData = imaging.Fit(targetData, width, height, imaging.Lanczos)
+		targetData = imaging.Sharpen(targetData, 3.5)
 		targetData = imaging.OverlayCenter(CreateBackground(width, height, color.White), targetData, 100)
+		targetContentType = "image/jpeg"
 		go func() {
 			defer imageWriter.Close()
-			imaging.Encode(imageWriter, targetData, imaging.BMP)
+			imaging.Encode(imageWriter, targetData, imaging.JPEG)
 		}()
-	default:
-		err := "Unknown format " + inputFormat
-		http.Error(w, err, 404)
-		log.Println(err, sourceFileName)
-		return
 	}
 
 	// Create reader clone
 	var buf bytes.Buffer
 	tee := io.TeeReader(imageReader, &buf)
 
-	w.Header().Add("Content-type", sourceFileInfo.ContentType)
+	w.Header().Add("Content-type", targetContentType)
 	w.Header().Add("X-Resized", "true")
 	host, _ := os.Hostname()
 	w.Header().Add("X-Serve-From", host)
-	size, _ := io.Copy(w, tee)
+	_, _ = io.Copy(w, tee)
 
+	/*
 	_, a := api.minioClient.PutObject(*bucketName, targetFileName, io.Reader(&buf), size, minio.PutObjectOptions{ContentType: sourceFileInfo.ContentType})
 	if a != nil {
 		log.Println(a, targetFileName)
+	}*/
+}
+
+func resizeFrame(result chan *image.Paletted, frames []*image.Paletted, tw, th int) {
+	//or := frames[0].Rect
+	r := image.Rect(0, 0, tw, th)
+
+	beforeBounds := frames[0].Bounds()
+	firstFrame := imaging.Fit(frames[0], tw, th, imaging.Linear)
+	//firstFrame = imaging.OverlayCenter(CreateBackground(tw, th, color.White), firstFrame, 100)
+	afterBounds := firstFrame.Bounds()
+
+	log.Println(beforeBounds)
+	log.Println(afterBounds)
+
+	img := image.NewNRGBA(r)
+
+	result <- ImageToPaletted(firstFrame, frames[0].Palette)
+	for i := 1; i < len(frames); i++ {
+		frame := frames[i]
+		targetRect := image.Rect((frame.Bounds().Min.X * afterBounds.Size().X) / beforeBounds.Size().X, (frame.Bounds().Min.Y * afterBounds.Size().Y) / beforeBounds.Size().Y, (frame.Bounds().Max.X * afterBounds.Size().X) / beforeBounds.Size().X, (frame.Bounds().Max.Y * afterBounds.Size().Y) / beforeBounds.Size().Y)
+		log.Println("Frame processing", i)
+
+		//log.Println(frame.Bounds())
+
+		newImg := imaging.Resize(frame, targetRect.Size().X, targetRect.Size().Y, imaging.Linear)
+
+		draw.Draw(img, img.Bounds(), &image.Uniform{C:color.Transparent}, image.ZP, draw.Over)
+		draw.Draw(img, targetRect.Bounds(), newImg, newImg.Bounds().Min, draw.Over)
+
+		//log.Println(newImg.S)
+		result <- ImageToPaletted(img, frame.Palette)
 	}
+
+	close(result)
 }
