@@ -7,33 +7,61 @@ import (
 	_ "github.com/Soreil/svg"
 	"github.com/disintegration/imaging"
 	"github.com/minio/minio-go"
+	"github.com/pkg/errors"
 	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/draw"
-	"image/gif"
 	_ "image/jpeg"
 	"image/png"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Cli Flags
 var (
-	address    = flag.String("a", "0.0.0.0:2222", "Server address")
-	bucketName = flag.String("b", "", "Bucket name")
-	endPoint   = flag.String("e", "http://minio1.servers.platinbox.org:9000", "Minio server endpoint")
+	address     = flag.String("a", "0.0.0.0:2222", "Server address")
+	bucketName  = flag.String("b", "", "Bucket name")
+	endPoint    = flag.String("e", "http://minio1.servers.platinbox.org:9000", "Minio server endpoint")
+	gifsicleCmd string
 )
 
 // Thumbnail Handler
 type thumbnailHandlers struct {
 	minioClient *minio.Client
 }
+
+// Init
+func init() {
+	var err error
+	gifsicleCmd, err = exec.LookPath("gifsicle")
+	if err != nil {
+		log.Fatalln("gifsicle not found")
+	}
+}
+
+// Run gifsicle command
+func runGifsicle(r io.Reader, args []string, w io.Writer) error {
+	cmd := exec.Command(gifsicleCmd, args...)
+	var stderr bytes.Buffer
+	cmd.Stdin = r
+	cmd.Stdout = w
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		return errors.New("Girsicle error! - " + err.Error() +  " - " + strings.Trim(string(stderr.Bytes()), " "))
+	}
+	return nil
+}
+
 
 // Finds out whether the url is http(insecure) or https(secure).
 func isSecure(urlStr string) bool {
@@ -134,11 +162,13 @@ func GetContentType(r *minio.Object) (string, error) {
 	return contentType, nil
 }
 
-func ImageToPaletted(img image.Image, plt color.Palette) *image.Paletted {
-	b := img.Bounds()
-	pm := image.NewPaletted(b, plt)
-	draw.FloydSteinberg.Draw(pm, b, img, b.Min)
-	return pm
+func calculateAspectRatioFit(srcWidth, srcHeight, maxWidth, maxHeight float64) (int, int) {
+	if srcWidth == 0 || srcHeight == 0 {
+		return 0, 0
+	}
+	ratio := []float64{ maxWidth / srcWidth, maxHeight / srcHeight }
+	minRatio := math.Min(ratio[0], ratio[1])
+	return int(math.Round(srcWidth * minRatio)), int(math.Round(srcHeight * minRatio))
 }
 
 // Request Process
@@ -242,7 +272,6 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 			typeName = "application/octet-stream"
 		}
 
-		log.Println(targetFileName)
 		targetFile.Seek(0, 0)
 
 		w.Header().Add("Content-Type", typeName)
@@ -305,30 +334,42 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 		}()
 	case "gif":
 		sourceFile.Seek(0, 0)
-		gifList, _ := gif.DecodeAll(sourceFile)
 
-		// Create a new RGBA image to hold the incremental frames.
-		//firstFrame := gifList.Image[0]
-		//b := image.Rect(0, 0, firstFrame.Rect.Dx(), firstFrame.Rect.Dy())
-		//transparentImage := image.NewPaletted(b, firstFrame.Palette)
-		//draw.FloydSteinberg.Draw(transparentImage, transparentImage.Bounds(), &image.Uniform{C:color.Transparent}, image.Point{X: 0, Y: 0})
+		actualWidth := float64(targetData.Bounds().Size().X)
+		actualHeight := float64(targetData.Bounds().Size().Y)
 
-		img := make(chan *image.Paletted)
-		go resizeFrame(img, gifList.Image, width, height)
+		lastWidth, lastHeight := calculateAspectRatioFit(actualWidth, actualHeight, float64(width), float64(height))
 
-		gifList.Config.ColorModel.Convert(color.RGBA{})
+		offsetX := (lastWidth - width) / 2
+		offsetY := (lastHeight - height) / 2
 
-		for i := 0; i < len(gifList.Image); i++ {
-			gifList.Image[i] = <- img
-		}
+		tR, tW := io.Pipe()
+		defer tR.Close()
 
-		// Setup gif config
-		gifList.Config.Width = width
-		gifList.Config.Height = height
+		go func() {
+			defer tW.Close()
+			var err error = nil
+			if resizeRequire {
+				targetWidth := strconv.Itoa(targetWidthHeight["width"])
+				if targetWidth == "0" {
+					targetWidth = "_"
+				}
+				targetHeight := strconv.Itoa(targetWidthHeight["height"])
+				if targetHeight == "0" {
+					targetHeight = "_"
+				}
+				err = runGifsicle(sourceFile, []string{ "--resize", fmt.Sprintf("%sx%s", targetWidth, targetHeight) }, tW)
+			} else {
+				err = runGifsicle(sourceFile, []string{ "--resize-fit", fmt.Sprintf("%dx%d", width, height) }, tW)
+			}
+			if err != nil {
+				log.Println(err)
+			}
+		}()
 
 		go func() {
 			defer imageWriter.Close()
-			gif.EncodeAll(imageWriter, gifList)
+			runGifsicle(tR, []string{ "--crop", fmt.Sprintf("%d,%d+%dx%d", offsetX, offsetY, width, height), "--no-warnings", "--no-ignore-errors" }, imageWriter)
 		}()
 	case "png":
 		if resizeRequire {
@@ -362,45 +403,10 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 	w.Header().Add("X-Resized", "true")
 	host, _ := os.Hostname()
 	w.Header().Add("X-Serve-From", host)
-	_, _ = io.Copy(w, tee)
+	size, _ := io.Copy(w, tee)
 
-	/*
 	_, a := api.minioClient.PutObject(*bucketName, targetFileName, io.Reader(&buf), size, minio.PutObjectOptions{ContentType: sourceFileInfo.ContentType})
 	if a != nil {
 		log.Println(a, targetFileName)
-	}*/
-}
-
-func resizeFrame(result chan *image.Paletted, frames []*image.Paletted, tw, th int) {
-	//or := frames[0].Rect
-	//r := image.Rect(0, 0, tw, th)
-
-
-
-
-	beforeBounds := frames[0].Bounds()
-
-	firstFrame := imaging.Fit(frames[0], tw, th, imaging.Box)
-	firstFrame = imaging.OverlayCenter(CreateBackground(tw, th, color.Transparent), firstFrame, 100)
-	afterBounds := firstFrame.Bounds()
-
-	//log.Println(frames[0].Palette)
-	result <- ImageToPaletted(firstFrame, frames[0].Palette)
-	for i := 1; i < len(frames); i++ {
-		frame := frames[i]
-		targetRect := image.Rect((frame.Bounds().Min.X * afterBounds.Size().X) / beforeBounds.Size().X, (frame.Bounds().Min.Y * afterBounds.Size().Y) / beforeBounds.Size().Y, (frame.Bounds().Max.X * afterBounds.Size().X) / beforeBounds.Size().X, (frame.Bounds().Max.Y * afterBounds.Size().Y) / beforeBounds.Size().Y)
-		log.Println("Frame processing", i)
-
-		//log.Println(frame.Bounds())
-		newImg := imaging.Resize(frame, targetRect.Size().X, targetRect.Size().Y, imaging.Welch)
-
-		img := *image.NewNRGBA(targetRect)
-		//draw.Draw(img, targetRect, &image.Uniform{C:color.Transparent}, image.ZP, draw.Src)
-		draw.Draw(&img, targetRect, newImg, newImg.Bounds().Min, draw.Over)
-
-		//log.Println(newImg.S)
-		result <- ImageToPaletted(&img, frame.Palette)
 	}
-
-	close(result)
 }
