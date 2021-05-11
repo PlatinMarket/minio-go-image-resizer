@@ -4,11 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	_ "github.com/Soreil/svg"
-	"github.com/disintegration/imaging"
-	"github.com/minio/minio-go"
-	"github.com/pkg/errors"
-	_ "golang.org/x/image/webp"
 	"image"
 	"image/color"
 	"image/draw"
@@ -24,6 +19,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	_ "github.com/Soreil/svg"
+	"github.com/disintegration/imaging"
+	"github.com/minio/minio-go"
+	"github.com/pkg/errors"
+	_ "golang.org/x/image/webp"
 )
 
 // Cli Flags
