@@ -31,7 +31,8 @@ import (
 var (
 	address     = flag.String("a", "0.0.0.0:2222", "Server address")
 	bucketName  = flag.String("b", "", "Bucket name")
-	endPoint    = flag.String("e", "http://minio1.servers.platinbox.org:9000", "Minio server endpoint")
+	endPoint    = flag.String("e", "http://minio1.servers.platinbox.org:9000", "Server Endpoint")
+	region      = flag.String("r", "fr-par", "Region")
 	gifsicleCmd string
 )
 
@@ -116,7 +117,7 @@ func main() {
 	accessKey, secretKey := mustGetAccessKeys()
 
 	// Initialize minio client.
-	minioClient, err := minio.New(findHost(*endPoint), accessKey, secretKey, isSecure(*endPoint))
+	minioClient, err := minio.NewWithRegion(findHost(*endPoint), accessKey, secretKey, isSecure(*endPoint), *region)
 	if err != nil {
 		log.Fatalln(err)
 	}
