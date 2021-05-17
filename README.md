@@ -24,3 +24,8 @@ resizer -b reform -a "0.0.0.0:2222" -e "http://localhost:9000"
 ```bash
 ACCESS_KEY=ACCESS SECRET_KEY=SECRET ./bin/resizer -b platinmarket-reform -a 0.0.0.0:2222 -e https://s3.fr-par.scw.cloud
 ```
+
+```bash
+$ docker run -d -p 3333:2222 resizer:latest
+$ echo -e "GET /1535/pictures/thumb/100X-AAILHXZZDR32320216321_32819.jpg HTTP/1.0\n\n" | nc 0.0.0.0 3333
+```
