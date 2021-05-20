@@ -7,4 +7,4 @@ image: build
 	docker build . --tag resizer:${BUILD} --tag resizer:latest
 
 linux:
-	GOOS=linux GOARCH=amd64 go build -o bin/resizer-amd64 main.go
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/resizer-amd64 main.go
