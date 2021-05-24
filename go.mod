@@ -6,6 +6,8 @@ require (
 	github.com/Soreil/svg v0.0.0-20160613145315-842dc141b353
 	github.com/disintegration/imaging v1.6.2
 	github.com/go-ini/ini v1.62.0 // indirect
+	github.com/go-redis/redis/v8 v8.8.3 // indirect
+	github.com/go-redsync/redsync/v4 v4.3.0 // indirect
 	github.com/minio/minio-go v6.0.14+incompatible
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/pkg/errors v0.9.1
