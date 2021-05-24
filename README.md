@@ -6,6 +6,7 @@ Minio image resizer written in go. Using Minio S3 Object Storage Server
 | - | - | - | - |
 | ACCESS_KEY | S3 Access Key | ENV | - |
 | SECRET_KEY | S3 Access Secret Key | ENV | - |
+| REDIS_SERVICE | Redis service address | ENV | - |
 | -b | Bucket Name | PARAMETER | - |
 | -a | Server Listen Address | PARAMETER | "0.0.0.0:2222" |
 | -e | Endpoint Address | PARAMETER | "http://minio1.servers.platinbox.org:9000" |
