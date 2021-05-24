@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"image"
@@ -22,6 +23,10 @@ import (
 
 	_ "github.com/Soreil/svg"
 	"github.com/disintegration/imaging"
+	red "github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4"
+	"github.com/go-redsync/redsync/v4/redis"
+	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
 	"github.com/minio/minio-go"
 	"github.com/pkg/errors"
 	_ "golang.org/x/image/webp"
@@ -36,9 +41,72 @@ var (
 	gifsicleCmd string
 )
 
+// Define Locker
+type Locker struct {
+	client *red.Client
+	pool redis.Pool
+	sync *redsync.Redsync
+	connected bool
+}
+
+// Acquire a lock with the key.
+func (l *Locker) lock(key string, w http.ResponseWriter, r *http.Request) (*redsync.Mutex, error) {
+	if !l.connected {
+		return nil, nil;
+	}
+
+	// Generate the mutex.
+	mutex := locker.sync.NewMutex(key)
+
+	// Try to acquire lock. If already locked, finalize the request with 503 and Retry-after.
+	if err := mutex.Lock(); err != nil {
+		w.Header().Add("Retry-After", "3")
+		http.Error(w, "Resource was busy, try again in 3 seconds.", 503)
+		r.Body.Close()
+		return nil, err
+	}
+
+	// log.Println(mutex)
+
+	// Return lock.
+	return mutex, nil;
+}
+
+func (l *Locker) unlock(m *redsync.Mutex) error {
+	if !l.connected {
+		return nil;
+	}
+
+	if m != nil {
+		if ok, err := m.Unlock(); (!ok || err != nil) {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// Locker
+var locker *Locker
+
 // Thumbnail Handler
 type thumbnailHandlers struct {
 	minioClient *minio.Client
+}
+
+func initRedis() {
+	if addr, ok := os.LookupEnv("REDIS_SERVICE"); ok {
+		locker = new(Locker)
+		locker.client = red.NewClient(&red.Options{ Addr: addr })
+		locker.pool = goredis.NewPool(locker.client)
+		locker.sync = redsync.New(locker.pool)
+		locker.connected = false
+
+		if _, err := locker.client.Ping(context.Background()).Result(); err == nil {
+			log.Printf("[REDIS] Connection established with the service, %s, mutex on.\n", addr)
+			locker.connected = true
+		}
+	}
 }
 
 // Init
@@ -48,6 +116,8 @@ func init() {
 	if err != nil {
 		log.Fatalln("gifsicle not found")
 	}
+
+	initRedis()
 }
 
 // Run gifsicle command
@@ -283,6 +353,18 @@ func (api thumbnailHandlers) ProcessRequest(w http.ResponseWriter, r *http.Reque
 		io.Copy(w, targetFile)
 		return
 	}
+
+	// Lock the first request.
+	mutex, err := locker.lock(targetFileName, w, r)
+	defer locker.unlock(mutex)
+	if err != nil {
+		return;
+	}
+
+	// Test delay for local. Make concurrent requests to same resource in 10 second.
+	// The first one should handle the real request while others waiting to resolve with 503 Retry-After
+	// time.Sleep(10 * time.Second)
+	// log.Println("PASS")
 
 	// Open source file
 	sourceFile, err := api.minioClient.GetObject(*bucketName, sourceFileName, minio.GetObjectOptions{})
