@@ -25,7 +25,6 @@ import (
 	"github.com/disintegration/imaging"
 	red "github.com/go-redis/redis/v8"
 	"github.com/go-redsync/redsync/v4"
-	"github.com/go-redsync/redsync/v4/redis"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
 	"github.com/minio/minio-go"
 	"github.com/pkg/errors"
@@ -43,15 +42,13 @@ var (
 
 // Define Locker
 type Locker struct {
-	client *red.Client
-	pool redis.Pool
+	initialized bool
 	sync *redsync.Redsync
-	connected bool
 }
 
 // Acquire a lock with the key.
 func (l *Locker) lock(key string, w http.ResponseWriter, r *http.Request) (*redsync.Mutex, error) {
-	if l == nil || !l.connected {
+	if l == nil || !l.initialized {
 		return nil, nil;
 	}
 
@@ -61,23 +58,17 @@ func (l *Locker) lock(key string, w http.ResponseWriter, r *http.Request) (*reds
 	// Try to acquire lock. If already locked, finalize the request with 503 and Retry-after.
 	if err := mutex.Lock(); err != nil {
 		w.Header().Add("Retry-After", "3")
-		http.Error(w, "Resource was busy, try again in 3 seconds.", 503)
+		http.Error(w, "Resource was busy, try again in 3 seconds.", http.StatusServiceUnavailable)
 		r.Body.Close()
 		return nil, err
 	}
-
-	// log.Println(mutex)
 
 	// Return lock.
 	return mutex, nil;
 }
 
 func (l *Locker) unlock(m *redsync.Mutex) error {
-	if l == nil || !l.connected {
-		return nil;
-	}
-
-	if m != nil {
+	if l != nil && l.initialized && m != nil {
 		if ok, err := m.Unlock(); (!ok || err != nil) {
 			return err
 		}
@@ -97,16 +88,16 @@ type thumbnailHandlers struct {
 func initRedis() {
 	if addr, ok := os.LookupEnv("REDIS_SERVICE"); ok {
 		locker = new(Locker)
-		locker.client = red.NewClient(&red.Options{ Addr: addr })
-		locker.pool = goredis.NewPool(locker.client)
-		locker.sync = redsync.New(locker.pool)
-		locker.connected = false
+		client := red.NewClient(&red.Options{ Addr: addr })
+		pool := goredis.NewPool(client)
+		locker.sync = redsync.New(pool)
+		locker.initialized = false
 
 		log.Printf("[REDIS] Service address %s\n", addr)
 
-		if _, err := locker.client.Ping(context.Background()).Result(); err == nil {
+		if _, err := client.Ping(context.Background()).Result(); err == nil {
 			log.Printf("[REDIS] Connection established with the service, %s, mutex on.\n", addr)
-			locker.connected = true
+			locker.initialized = true
 		}
 	}
 }
