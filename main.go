@@ -220,40 +220,6 @@ func main() {
 
 // Check the liveness of the service
 func (api thumbnailHandlers) healthcheck(w http.ResponseWriter, r *http.Request) {
-	host, _ := os.Hostname()
-	objectName := fmt.Sprintf("ping/%s.png", host)
-
-	// Create a 1x1 black dot.
-	pong := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	pong.Set(0, 0, color.Black)
-
-	// Byte buffer for the encoded image.
-	var buffer bytes.Buffer
-
-	// Encode and write to buffer.
-	if err := imaging.Encode(&buffer, pong, imaging.PNG); err != nil {
-		w.WriteHeader(503)
-		return
-	}
-
-	// Put object.
-	if _, err := api.minioClient.PutObject(*bucketName, objectName, io.Reader(&buffer), int64(buffer.Len()), minio.PutObjectOptions{ContentType: "image/png"}); err != nil {
-		w.WriteHeader(503)
-		return
-	}
-
-	// Check liveness.
-	if _, err := api.minioClient.StatObject(*bucketName, objectName, minio.StatObjectOptions{}); err != nil {
-		w.WriteHeader(503)
-		return
-	}
-
-	// Remove object.
-	if err := api.minioClient.RemoveObject(*bucketName, objectName); err != nil {
-		w.WriteHeader(503)
-		return
-	}
-
 	w.WriteHeader(200)
 }
 
