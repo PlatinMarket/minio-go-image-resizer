@@ -30,3 +30,23 @@ ACCESS_KEY=ACCESS SECRET_KEY=SECRET ./bin/resizer -b platinmarket-reform -a 0.0.
 $ docker run -d -p 3333:2222 resizer:latest
 $ echo -e "GET /1535/pictures/thumb/100X-AAILHXZZDR32320216321_32819.jpg HTTP/1.0\n\n" | nc 0.0.0.0 3333
 ```
+
+### Bare Ubuntu Instance
+
+Fill the empty fields on the *thumbnail.env*
+
+```sh
+# Install.
+$ make install
+
+# Uninstall.
+$ sudo make uninstall
+
+# Update.
+$ sudo make uninstall && make install
+```
+
+```sh
+# Start the service.
+$ systemctl start resizer.service && systemctl enable resizer.service
+```

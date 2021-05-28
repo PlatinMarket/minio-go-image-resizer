@@ -1,0 +1,17 @@
+[Unit]
+Description=Resizer Service
+Documentation=https://github.com/PlatinMarket/minio-go-image-resizer
+Wants=network-online.target
+After=network-online.target
+AssertFileIsExecutable=/usr/local/bin/resizer
+
+[Service]
+Restart=on-failure
+RestartSec=5s
+StandardOutput=null
+StandardError=null #journal
+EnvironmentFile=/usr/local/share/thumbnail.env
+ExecStart=/usr/local/bin/resizer -b $BUCKET_NAME -a $RES_LISTEN_PORT -e $RES_ENDPOINT
+
+[Install]
+WantedBy=multi-user.target
